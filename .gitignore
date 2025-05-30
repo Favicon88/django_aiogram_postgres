@@ -3,6 +3,7 @@ postgres_data/
 django_admin_panel/static/*
 logs/*
 shared_media/*
+orders_data/*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
