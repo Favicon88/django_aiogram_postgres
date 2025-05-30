@@ -1,0 +1,2 @@
+DATETIME_FORMAT = "%H:%M:%S_%d.%m.%Y"
+BUTTONS_PER_PAGE = 3

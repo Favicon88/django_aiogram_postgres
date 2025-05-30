@@ -1,0 +1,16 @@
+[tool.black]
+line-length = 79
+exclude = '''
+/(
+    \.venv|
+    venv|
+    build|
+    dist|
+    __init__\.py
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 79
+skip = ["__init__.py", "venv", ".venv"]
