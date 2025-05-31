@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    ports:
+      - "5435:5432"
+    env_file:
+      - .env
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+
+  admin_panel:
+    build: 
+      context: ./django_admin_panel
+    env_file:
+      - .env
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./shared_media:/app/images
+      - ./django_admin_panel/static:/app/static/
+      - ./django_admin_panel/media:/app/media/
+
+  bot:
+    build:
+      context: ./telegram_bot
+    env_file:
+      - .env
+    depends_on:
+      - db
+    volumes:
+      - ./orders_data:/app/orders_data
+      - ./logs:/app/logs
+      - ./shared_media:/app/images
