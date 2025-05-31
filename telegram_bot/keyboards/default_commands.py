@@ -11,9 +11,6 @@ if TYPE_CHECKING:
 users_commands: dict[str, dict[str, str]] = {
     "ru": {
         "start": "Запуск бота",
-        "settings": "Настройки (замена фото, пола)",
-        "ava": "Сделать аватарки",
-        "help": "Как использовать бота",
     },
 }
 
