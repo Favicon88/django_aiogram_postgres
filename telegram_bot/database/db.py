@@ -1,413 +1,281 @@
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
-
 from aiocache import cached
-from aiogram.types import ShippingAddress
-from asyncpg import Pool
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from datetime import datetime, timezone
+from typing import List, Optional
 from config import logger
-from database.models import CartItem, Category, Client, OrderItem, Product
-from pydantic import TypeAdapter
+from database.models import (
+    Client,
+    Category,
+    Product,
+    CartItem,
+    Cart,
+    Order,
+    OrderItem,
+)
+from aiogram.types import ShippingAddress
+
+
+async def get_client_by_telegram_id(
+    telegram_id: int, session: AsyncSession
+) -> Optional[Client]:
+    """Функция для получения клиента по telegram_id."""
+    result = await session.execute(
+        select(Client).where(Client.telegram_id == telegram_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_cart_by_client_id(
+    client_id: int, session: AsyncSession, with_items: bool = False
+) -> Optional[Cart]:
+    """
+    Функция для получения корзины клиента,
+    с опциональной подгрузкой товаров.
+    """
+    stmt = select(Cart).where(Cart.client_id == client_id)
+    if with_items:
+        stmt = stmt.options(selectinload(Cart.items))
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 async def get_or_create_user(
-    telegram_id: int, username: str, pool: Pool
+    telegram_id: int, username: str, session: AsyncSession
 ) -> Client:
-    """
-    Получает или создает пользователя в базе данных.
-    """
-    async with pool.acquire() as conn:
-        # Попытка найти пользователя по telegram_id
-        user_record = await conn.fetchrow(
-            "SELECT * FROM app_client WHERE telegram_id = $1",
-            telegram_id,
-        )
+    stmt = select(Client).where(Client.telegram_id == telegram_id)
+    result = await session.execute(stmt)
+    user = result.scalar_one_or_none()
 
-        if user_record:
-            if user_record["username"] != username:
-                await conn.execute(
-                    "UPDATE app_client SET username = $1 WHERE telegram_id = $2",
-                    username,
-                    telegram_id,
-                )
-                # Перечитываем запись, чтобы получить обновленный username
-                user_record = await conn.fetchrow(
-                    "SELECT * FROM app_client WHERE telegram_id = $1",
-                    telegram_id,
-                )
-            return TypeAdapter(Client).validate_python(dict(user_record))
-        else:
-            # Пользователь не найден, создаем нового
-            new_user_record: Dict = await conn.fetchrow(
-                """
-                INSERT INTO app_client (telegram_id, username, created_at) 
-                VALUES ($1, $2, $3) RETURNING *
-                """,
-                telegram_id,
-                username,
-                datetime.utcnow(),
-            )
-            return TypeAdapter(Client).validate_python(dict(new_user_record))
+    if user:
+        if user.username != username:
+            user.username = username
+            await session.commit()
+            await session.refresh(user)
+        return user
+
+    new_user = Client(
+        telegram_id=telegram_id,
+        username=username,
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(new_user)
+    await session.commit()
+    await session.refresh(new_user)
+    return new_user
 
 
 @cached(ttl=120)
-async def get_categories(
-    pool: Pool,
-) -> List[Category]:
-    """
-    Возвращает список основных категорий из базы данных.
-    """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT *
-            FROM app_category
-            WHERE parent_id IS NULL
-            ORDER BY name;
-            """
-        )
-
-    if not rows:
-        return
-
-    row_dicts = [dict(row) for row in rows]
-
-    return TypeAdapter(List[Category]).validate_python(row_dicts)
+async def get_categories(session: AsyncSession) -> List[Category]:
+    stmt = (
+        select(Category)
+        .where(Category.parent_id.is_(None))
+        .order_by(Category.name)
+        .options(selectinload(Category.subcategories))
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()
 
 
 @cached(ttl=120)
 async def get_subcategories(
-    category_id: int,
-    pool: Pool,
+    category_id: int, session: AsyncSession
 ) -> List[Category]:
-    """
-    Возвращает подкатегории указанной категории.
-    """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT *
-            FROM app_category
-            WHERE parent_id = $1
-            ORDER BY name;
-            """,
-            category_id,
-        )
-
-    if not rows:
-        return
-    row_dicts = [dict(row) for row in rows]
-
-    return TypeAdapter(List[Category]).validate_python(row_dicts)
+    stmt = (
+        select(Category)
+        .where(Category.parent_id == category_id)
+        .order_by(Category.name)
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()
 
 
 @cached(ttl=120)
 async def get_products(
-    subcategory_id: int,
-    pool: Pool,
+    subcategory_id: int, session: AsyncSession
 ) -> List[Product]:
-    """
-    Возвращает список товаров из подкатегории
-    """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT *
-            FROM app_product
-            WHERE category_id = $1
-            ORDER BY name;
-            """,
-            subcategory_id,
-        )
-
-    if not rows:
-        return
-    row_dicts = [dict(row) for row in rows]
-
-    return TypeAdapter(List[Product]).validate_python(row_dicts)
+    stmt = (
+        select(Product)
+        .where(Product.category_id == subcategory_id)
+        .order_by(Product.name)
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()
 
 
 @cached(ttl=120)
 async def get_product(
-    product_id: int,
-    pool: Pool,
-) -> Product | None:
-    """
-    Возвращает информацию о товаре по product_id.
-    """
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT *
-            FROM app_product
-            WHERE id = $1;
-            """,
-            product_id,
-        )
-
-    if row is None:
-        return
-
-    return TypeAdapter(Product).validate_python(dict(row))
+    product_id: int, session: AsyncSession
+) -> Optional[Product]:
+    stmt = select(Product).where(Product.id == product_id)
+    result = await session.execute(stmt)
+    return result.scalars().first()
 
 
 async def add_to_cart(
-    telegram_id: int, product_id: int, quantity: int, pool: Pool
+    telegram_id: int,
+    product_id: int,
+    quantity: int,
+    session: AsyncSession,
 ) -> CartItem:
-    """Добавляет товар в корзину, все операции транзакцией."""
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            client = await conn.fetchrow(
-                "SELECT id FROM app_client WHERE telegram_id = $1", telegram_id
+    async with session.begin():
+        client = await get_client_by_telegram_id(telegram_id, session)
+        if not client:
+            raise ValueError(f"Клиент с telegram_id={telegram_id} не найден")
+
+        cart = await session.scalar(
+            select(Cart).where(Cart.client_id == client.id)
+        )
+        if not cart:
+            cart = Cart(
+                client_id=client.id, created_at=datetime.now(timezone.utc)
             )
-            if not client:
-                logger.error(f"Клиент с ID {telegram_id} не найден")
-                raise ValueError("Клиент не найден")
-            client_id = client["id"]
+            session.add(cart)
+            await session.flush()
 
-            cart = await conn.fetchrow(
-                "SELECT id FROM app_cart WHERE client_id = $1", client_id
+        cart_item = await session.scalar(
+            select(CartItem)
+            .where(
+                CartItem.cart_id == cart.id, CartItem.product_id == product_id
             )
-            if not cart:
-                cart = await conn.fetchrow(
-                    "INSERT INTO app_cart (client_id, created_at) VALUES ($1, NOW()) RETURNING id",
-                    client_id,
-                )
-                logger.info(f"Создана новая корзина для клиента {telegram_id}")
-            cart_id = cart["id"]
+            .options(selectinload(CartItem.product))
+        )
 
-            cart_item = await conn.fetchrow(
-                "SELECT id, quantity FROM app_cartitem WHERE cart_id = $1 AND product_id = $2",
-                cart_id,
-                product_id,
+        if cart_item:
+            cart_item.quantity += quantity
+        else:
+            product = await get_product(product_id, session)
+            if not product:
+                raise ValueError(f"Товар с product_id={product_id} не найден")
+            cart_item = CartItem(
+                cart_id=cart.id,
+                product_id=product_id,
+                quantity=quantity,
+                product=product,
             )
+            session.add(cart_item)
 
-            if cart_item:
-                new_quantity = cart_item["quantity"] + quantity
-                await conn.execute(
-                    "UPDATE app_cartitem SET quantity = $1 WHERE id = $2",
-                    new_quantity,
-                    cart_item["id"],
-                )
-                cart_item_id = cart_item["id"]
-            else:
-                new_item = await conn.fetchrow(
-                    "INSERT INTO app_cartitem (cart_id, product_id, quantity) VALUES ($1, $2, $3) RETURNING id, quantity",
-                    cart_id,
-                    product_id,
-                    quantity,
-                )
-                cart_item_id = new_item["id"]
-                new_quantity = new_item["quantity"]
-
-            # Получаем данные товара
-            product_row = await conn.fetchrow(
-                "SELECT * FROM app_product WHERE id = $1",
-                product_id,
-            )
-            if not product_row:
-                logger.error(f"Продукт с ID {product_id} не найден")
-                raise ValueError("Товар не найден")
-
-            product = Product(**dict(product_row))
-
-            return CartItem(
-                id=cart_item_id, product=product, quantity=new_quantity
-            )
+        await session.flush()
+        return cart_item
 
 
 async def get_cart_items(
-    telegram_id: int, pool: Pool
-) -> List[CartItem] | None:
-    """
-    Получает список товаров в корзине пользователя по telegram_id.
-    """
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            client = await conn.fetchrow(
-                "SELECT id FROM app_client WHERE telegram_id = $1", telegram_id
-            )
-            if not client:
-                logger.warning(f"Клиент с ID {telegram_id} не найден")
-                return []
+    telegram_id: int, session: AsyncSession
+) -> List[CartItem]:
+    client = await get_client_by_telegram_id(telegram_id, session)
+    if not client:
+        logger.warning(f"Клиент с ID {telegram_id} не найден")
+        return []
 
-            client_id = client["id"]
+    stmt = (
+        select(Cart)
+        .where(Cart.client_id == client.id)
+        .options(selectinload(Cart.items).selectinload(CartItem.product))
+    )
+    result = await session.execute(stmt)
+    cart = result.scalar_one_or_none()
 
-            cart = await conn.fetchrow(
-                "SELECT id FROM app_cart WHERE client_id = $1", client_id
-            )
-            if not cart:
-                logger.info(f"Корзина для клиента {telegram_id} не найдена")
-                return []
+    if not cart:
+        logger.info(f"Корзина для клиента {telegram_id} не найдена")
+        return []
 
-            cart_id = cart["id"]
-
-            rows = await conn.fetch(
-                """
-                SELECT 
-                    ci.id AS cart_item_id,
-                    ci.quantity,
-                    p.id AS product_id,
-                    p.name,
-                    p.price
-                FROM app_cartitem ci
-                JOIN app_product p ON ci.product_id = p.id
-                WHERE ci.cart_id = $1
-                """,
-                cart_id,
-            )
-
-            items: List[CartItem] = []
-            for row in rows:
-                product = Product(
-                    id=row["product_id"], name=row["name"], price=row["price"]
-                )
-                cart_item = CartItem(
-                    id=row["cart_item_id"],
-                    product=product,
-                    quantity=row["quantity"],
-                )
-                items.append(cart_item)
-
-            logger.info(
-                f"Получено {len(items)} товаров из корзины клиента {telegram_id}"
-            )
-            return items
+    logger.info(
+        f"Получено {len(cart.items)} товаров из корзины клиента {telegram_id}"
+    )
+    return cart.items
 
 
-async def clear_cart_items(telegram_id: int, pool: Pool) -> bool:
-    """
-    Полностью очищает корзину пользователя по его telegram_id:
-    - Удаляет все товары из app_cartitem
-    - Удаляет саму корзину из app_cart
-    """
+async def clear_cart_items(telegram_id: int, session: AsyncSession) -> bool:
+    async with session.begin():
+        client = await get_client_by_telegram_id(telegram_id, session)
+        if not client:
+            logger.warning(f"Клиент с telegram_id={telegram_id} не найден")
+            return False
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            client = await conn.fetchrow(
-                "SELECT id FROM app_client WHERE telegram_id = $1",
-                telegram_id,
-            )
-            if not client:
-                logger.warning(f"Клиент с telegram_id={telegram_id} не найден")
-                return False
+        cart = await get_cart_by_client_id(client.id, session, with_items=True)
+        if not cart:
+            logger.info(f"Корзина для клиента {telegram_id} не найдена")
+            return False
 
-            cart = await conn.fetchrow(
-                "SELECT id FROM app_cart WHERE client_id = $1",
-                client["id"],
-            )
-            if not cart:
-                logger.info(f"Корзина для клиента {telegram_id} не найдена")
-                return False
+        # Удаляем товары и корзину
+        for item in cart.items:
+            await session.delete(item)
+        await session.delete(cart)
 
-            cart_id = cart["id"]
-
-            # Удаляем все товары из корзины
-            await conn.execute(
-                "DELETE FROM app_cartitem WHERE cart_id = $1",
-                cart_id,
-            )
-
-            # Удаляем саму корзину
-            await conn.execute(
-                "DELETE FROM app_cart WHERE id = $1",
-                cart_id,
-            )
-
-            logger.info(
-                f"Корзина пользователя {telegram_id} была полностью очищена"
-            )
-            return True
+        logger.info(
+            f"Корзина пользователя {telegram_id} была полностью очищена"
+        )
+        return True
 
 
 async def create_order_from_cart(
     telegram_id: int,
     address: ShippingAddress,
-    pool: Pool,
+    session: AsyncSession,
 ) -> Optional[List[OrderItem]]:
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            client = await conn.fetchrow(
-                "SELECT id FROM app_client WHERE telegram_id = $1", telegram_id
+    async with session.begin():
+        client = await get_client_by_telegram_id(telegram_id, session)
+        if not client:
+            logger.warning(f"Клиент с telegram_id={telegram_id} не найден")
+            return None
+
+        stmt = (
+            select(Cart)
+            .where(Cart.client_id == client.id)
+            .options(selectinload(Cart.items).selectinload(CartItem.product))
+        )
+        result = await session.execute(stmt)
+        cart = result.scalar_one_or_none()
+
+        if not cart or not cart.items:
+            logger.warning(
+                f"Корзина пуста или не найдена для клиента {telegram_id}"
             )
-            if not client:
-                logger.warning(f"Клиент с telegram_id={telegram_id} не найден")
-                return None
+            return None
 
-            client_id = client["id"]
+        total_price = sum(
+            item.quantity * item.product.price for item in cart.items
+        )
 
-            cart = await conn.fetchrow(
-                "SELECT id FROM app_cart WHERE client_id = $1", client_id
+        address_str = ", ".join(
+            filter(
+                None,
+                [
+                    address.country_code,
+                    address.state,
+                    address.city,
+                    address.street_line1,
+                    address.street_line2,
+                    address.post_code,
+                ],
             )
-            if not cart:
-                logger.warning(f"Корзина клиента {telegram_id} не найдена")
-                return None
+        )
 
-            cart_id = cart["id"]
+        new_order = Order(
+            client_id=client.id,
+            total_price=total_price,
+            address=address_str,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(new_order)
+        await session.flush()
 
-            cart_items = await conn.fetch(
-                """
-                SELECT 
-                    ci.product_id,
-                    ci.quantity,
-                    p.id, p.name, p.price, p.category_id, p.description, p.photo
-                FROM app_cartitem ci
-                JOIN app_product p ON ci.product_id = p.id
-                WHERE ci.cart_id = $1
-                """,
-                cart_id,
+        order_items: List[OrderItem] = []
+        for item in cart.items:
+            order_item = OrderItem(
+                order_id=new_order.id,
+                product_id=item.product.id,
+                quantity=item.quantity,
+                price=item.product.price,
             )
+            session.add(order_item)
+            order_items.append(order_item)
 
-            if not cart_items:
-                logger.warning(f"Корзина пуста для клиента {telegram_id}")
-                return None
+        # Удаляем корзину и её товары
+        for item in cart.items:
+            await session.delete(item)
+        await session.delete(cart)
 
-            total_price = sum(
-                row["quantity"] * row["price"] for row in cart_items
-            )
-
-            order_row = await conn.fetchrow(
-                """
-                INSERT INTO app_order (client_id, total_price, address, created_at)
-                VALUES ($1, $2, $3, $4)
-                RETURNING id
-                """,
-                client_id,
-                total_price,
-                address.model_dump_json(),
-                datetime.utcnow(),
-            )
-            order_id = order_row["id"]
-
-            for item in cart_items:
-                await conn.execute(
-                    """
-                    INSERT INTO app_orderitem (order_id, product_id, quantity, price)
-                    VALUES ($1, $2, $3, $4)
-                    """,
-                    order_id,
-                    item["product_id"],
-                    item["quantity"],
-                    item["price"],
-                )
-
-            await conn.execute(
-                "DELETE FROM app_cartitem WHERE cart_id = $1", cart_id
-            )
-            await conn.execute("DELETE FROM app_cart WHERE id = $1", cart_id)
-
-            logger.info(f"Создан заказ {order_id} для клиента {telegram_id}")
-
-            order_items: List[OrderItem] = []
-
-            for row in cart_items:
-                product = TypeAdapter(Product).validate_python(dict(row))
-
-                order_item = OrderItem(
-                    id=row["product_id"],
-                    product=product,
-                    quantity=row["quantity"],
-                    price=row["price"],
-                )
-                order_items.append(order_item)
-
-            return order_items
+        logger.info(f"Создан заказ {new_order.id} для клиента {telegram_id}")
+        return order_items

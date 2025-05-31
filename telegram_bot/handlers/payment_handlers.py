@@ -3,11 +3,11 @@ from typing import List
 
 from aiogram import F, Router, types
 from aiogram.types import ShippingAddress
-from asyncpg import Pool
 from config import bot, logger
 from database import create_order_from_cart
 from database.models import OrderItem
 from services import append_order_to_excel
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = Router()
 
@@ -31,7 +31,7 @@ async def pre_checkout_query(pre_checkout_q: types.PreCheckoutQuery):
 @router.message(F.successful_payment)
 async def successful_payment(
     message: types.Message,
-    pool: Pool,
+    session: AsyncSession,
 ):
     """Событие вызывается после успешной оплаты корзины."""
 
@@ -47,7 +47,7 @@ async def successful_payment(
     )
 
     order_items: List[OrderItem] | None = await create_order_from_cart(
-        user_id, shipping_address, pool
+        user_id, shipping_address, session
     )
     logger.info(
         "Создание заказа из корзины завершено",

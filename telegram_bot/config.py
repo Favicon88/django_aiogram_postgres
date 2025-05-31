@@ -22,6 +22,7 @@ GROUP_URL = os.getenv("GROUP_URL")
 YOO_TOKEN = os.getenv("YOO_TOKEN")  # токен YooKassa
 LOG_FILE_PATH = os.getenv("LOG_FILE", "logs/telegram_bot.log")
 EXCEL_FILE = "orders_data/orders.xlsx"
+DB_URL = f"postgresql+asyncpg://{os.getenv("POSTGRES_USER")}:{os.getenv("POSTGRES_PASSWORD")}@{os.getenv("DB_HOST")}:{os.getenv("DB_PORT")}/{os.getenv("DB_NAME")}"
 
 logging.basicConfig(
     format="%(asctime)s.%(msecs)03d - %(levelname)s - %(name)s - %(message)s",
@@ -52,6 +53,7 @@ structlog.configure(
     context_class=dict,
     logger_factory=structlog.stdlib.LoggerFactory(),
 )
+
 logger = structlog.get_logger(__name__)
 
 dp = Dispatcher()

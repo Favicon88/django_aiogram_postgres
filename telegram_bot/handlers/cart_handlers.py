@@ -2,7 +2,6 @@ from typing import List
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
-from asyncpg import Pool
 from config import logger
 from database import add_to_cart, clear_cart_items, get_cart_items
 from database.models import CartItem
@@ -21,6 +20,7 @@ from keyboards import (
 )
 from locales.constants_text_ru import ITEMS_IN_CART
 from services import create_youkassa_invoice_link
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = Router()
 
@@ -63,7 +63,9 @@ async def set_quantity_handler(
 
 @router.callback_query(ConfirmAddToCartFilter.filter())
 async def confirm_add_to_cart_handler(
-    call: CallbackQuery, pool: Pool, callback_data: ConfirmAddToCartFilter
+    call: CallbackQuery,
+    session: AsyncSession,
+    callback_data: ConfirmAddToCartFilter,
 ):
     product_id = callback_data.id
     quantity = callback_data.quantity
@@ -75,7 +77,7 @@ async def confirm_add_to_cart_handler(
         product_id=product_id,
         quantity=quantity,
     )
-    await add_to_cart(user_id, product_id, quantity, pool)
+    await add_to_cart(user_id, product_id, quantity, session)
     keyboard = await get_main_menu_keyboard()
     await call.message.delete()
     await call.message.answer(
@@ -84,12 +86,14 @@ async def confirm_add_to_cart_handler(
 
 
 @router.callback_query(F.data == "cart_handler")
-async def cart_handler(call: CallbackQuery, pool: Pool):
+async def cart_handler(call: CallbackQuery, session: AsyncSession):
     user_id = call.from_user.id
     logger.info("Пользователь открыл корзину", user_id=user_id)
 
     try:
-        cart_items: List[CartItem] | None = await get_cart_items(user_id, pool)
+        cart_items: List[CartItem] | None = await get_cart_items(
+            user_id, session
+        )
     except Exception as e:
         logger.exception("Ошибка получения корзины", user_id=user_id)
         await call.message.answer(
@@ -115,12 +119,14 @@ async def cart_handler(call: CallbackQuery, pool: Pool):
 
 
 @router.callback_query(F.data == "order_cart_items")
-async def start_order(call: CallbackQuery, pool: Pool):
+async def start_order(call: CallbackQuery, session: AsyncSession):
     user_id = call.from_user.id
     logger.info("Начало оформления заказа", user_id=user_id)
 
     try:
-        cart_items: List[CartItem] | None = await get_cart_items(user_id, pool)
+        cart_items: List[CartItem] | None = await get_cart_items(
+            user_id, session
+        )
     except Exception:
         logger.exception(
             "Ошибка получения корзины для оформления", user_id=user_id
@@ -149,12 +155,14 @@ async def start_order(call: CallbackQuery, pool: Pool):
 
 @router.callback_query(RemoveFromCartFilter.filter())
 async def clear_cart_handler(
-    call: CallbackQuery, pool: Pool, callback_data: RemoveFromCartFilter
+    call: CallbackQuery,
+    session: AsyncSession,
+    callback_data: RemoveFromCartFilter,
 ):
     logger.info("Очистка корзины", user_id=callback_data.user_id)
-    await clear_cart_items(callback_data.user_id, pool)
+    await clear_cart_items(callback_data.user_id, session)
     await call.message.edit_text("Ваша корзина теперь пуста")
-    await show_main_menu(call, pool)
+    await show_main_menu(call, session)
 
 
 @router.callback_query(F.data == "none")

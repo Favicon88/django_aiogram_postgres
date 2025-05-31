@@ -7,7 +7,6 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InputTextMessageContent,
 )
-from asyncpg import Pool
 from config import BOT_NAME, logger
 from keyboards import get_to_main_menu_keyboard
 from locales.constants_text_ru import FAQ_TEXT

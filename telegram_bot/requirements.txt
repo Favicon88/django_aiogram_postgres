@@ -2,5 +2,6 @@ python-dotenv==1.1.0
 aiogram==3.20.0.post0
 structlog==25.3.0
 asyncpg==0.30.0
+sqlalchemy==2.0.41
 aiocache==0.12.3
 openpyxl==3.1.5

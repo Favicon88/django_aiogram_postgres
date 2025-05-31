@@ -1,4 +1,3 @@
-import asyncpg
 from aiogram import Router
 from aiogram.filters import CommandStart
 from aiogram.types import Message
@@ -7,18 +6,13 @@ from database import get_or_create_user
 from database.models import Client
 from handlers.show_categories import show_main_menu
 from services import subscriptions_check
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = Router()
 
 
 @router.message(CommandStart())
-async def command_start(message: Message, pool: asyncpg.Pool) -> None:
-    """
-    Обрабатывает команду /start.
-    Проверяет пользователя в БД, если его нет — регистрирует,
-    и отправляет приветственное сообщение с главным меню.
-    """
-
+async def command_start(message: Message, session: AsyncSession) -> None:
     logger.info("/start — получено сообщение от пользователя")
 
     if not message.from_user:
@@ -33,29 +27,20 @@ async def command_start(message: Message, pool: asyncpg.Pool) -> None:
     )
 
     try:
-        user: Client = await get_or_create_user(telegram_id, username, pool)
+        user: Client = await get_or_create_user(telegram_id, username, session)
         logger.info(
             f"Пользователь зарегистрирован или найден в БД: id={user.id}"
         )
-    except Exception as e:
-        logger.error(f"Ошибка при получении/создании пользователя: {e}")
-        return
 
-    try:
         is_user_subscribed: bool = await subscriptions_check(message, user)
+        if not is_user_subscribed:
+            logger.info(f"Пользователь {telegram_id} не подписан — завершение")
+            return
+
+        logger.info(
+            f"Пользователь {telegram_id} прошёл проверку — отправка главного меню"
+        )
+        await show_main_menu(message, session)
+
     except Exception as e:
-        logger.error(f"Ошибка при проверке подписки: {e}")
-        return
-
-    if not is_user_subscribed:
-        logger.info(f"Пользователь {telegram_id} не подписан — завершение")
-        return
-
-    logger.info(
-        f"Пользователь {telegram_id} прошёл проверку — отправка главного меню"
-    )
-
-    try:
-        await show_main_menu(message, pool)
-    except Exception as e:
-        logger.error(f"Ошибка при отправке главного меню: {e}")
+        logger.error(f"Ошибка в обработке /start: {e}")

@@ -1,10 +1,8 @@
-import math
-from typing import Dict, List
+from typing import List
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config import CHANNEL_URL, GROUP_URL
-from constants import BUTTONS_PER_PAGE
 from database.models import CartItem
 from filters import (
     AddToCartFilter,
@@ -17,7 +15,6 @@ from filters import (
 )
 from locales.constants_text_ru import (
     CHECK_SUBSCRIBE_TEXT,
-    ITEMS_IN_CART,
     OUR_CHANNEL,
     OUR_GROUP,
     RETURN,
